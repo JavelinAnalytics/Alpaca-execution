@@ -278,9 +278,9 @@ def fee_simulator(order):
             ticker = ticker.replace('/', '')
         if ticker[-3:] == 'BTC' and side == OrderSide.BUY:
             ticker = ticker.replace('BTC', 'USD')
-        if ticker[-3:] == 'USDT' and side == OrderSide.BUY:
+        if ticker[-4:] == 'USDT' and side == OrderSide.BUY:
             ticker = ticker.replace('USDT', 'USD')
-        if ticker[-3:] == 'USDC' and side == OrderSide.BUY:
+        if ticker[-4:] == 'USDC' and side == OrderSide.BUY:
             ticker = ticker.replace('USDC', 'USD')
         position = trading_client.get_open_position(ticker)
     except APIError:
