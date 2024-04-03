@@ -6,7 +6,8 @@ computations for filled orders.
 ## Requirements
 - Python >= 3.7
 - Alpaca API Key and Secret key
-- To install required libraries: `pip install alpaca-py`
+- For interaction with Trade_execution.py: install required libraries: `pip install alpaca-py`
+- For interaction with HTTP_request_version.py, the above installation is not required
 ## Keys
 The Alpaca API Keys used for trading are stored in a config file located in the same directory
 as the scripts. It has the following contents:
