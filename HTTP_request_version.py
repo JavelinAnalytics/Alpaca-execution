@@ -8,9 +8,9 @@ Created on Fri Mar 29 18:26:47 2024
 import requests
 import time
 from config_alpaca import API_KEY, SECRET_KEY
-from requests.exceptions import RequestException
+from datetime import datetime, timedelta
 
-trading_url = "https://paper-api.alpaca.markets"
+trading_url = "https://api.alpaca.markets"
 market_url = "https://data.alpaca.markets"
 headers_get_request = {
     "accept": "application/json",
@@ -78,6 +78,7 @@ def return_latest_price(ticker:str, orderside:str):
         return latest_quotes['bp']
 
 orders = {}
+prices = {}
 
 def open_new_trade(ticker:str, ordertype:str, orderside:str, notional=None, qty=None, limitprice=None, takeprofit=None, stoploss=None):
     """
@@ -250,6 +251,18 @@ def open_new_trade(ticker:str, ordertype:str, orderside:str, notional=None, qty=
                 return
         
         orders[ticker] = response
+        submission_time = response['submitted_at']
+        if '/BTC' in ticker:
+            prices[submission_time] = {
+                                     "bid/ask at fill": float(return_latest_price(ticker, orderside)), #store live bid/ask price for slippage calculations
+                                     "bid/ask at submission": float(return_latest_price(ticker, orderside)), #store live bid/ask price for trading fee computation
+                                     "BTC/USD at submission": float(return_latest_price('BTC/USD', orderside)) #store live btc/usd price for trading fee computation 
+            } 
+        else:
+            prices[submission_time] = {
+                                     "bid/ask at fill": float(return_latest_price(ticker, orderside)), 
+                                     "bid/ask at submission": float(return_latest_price(ticker, orderside))
+            } 
         return response['id']
     
     
@@ -358,40 +371,148 @@ def open_new_trade(ticker:str, ordertype:str, orderside:str, notional=None, qty=
                 return
         
         orders[ticker] = response
+        submission_time = response['submitted_at']
+        if '/BTC' in ticker:
+            prices[submission_time] = {
+                                     "bid/ask at fill": limitprice, # store limit price for slippage calculations
+                                     "bid/ask at submission": float(return_latest_price(ticker, orderside)), # store live bid/ask price for trading fee computations
+                                     "BTC/USD at submission": float(return_latest_price('BTC/USD', orderside)) # store live BTC/USD price for trading fee computations
+            } 
+        else:
+            prices[submission_time] = {
+                                     "bid/ask at fill": limitprice, 
+                                     "bid/ask at submission": float(return_latest_price(ticker, orderside))
+            } 
         return response['id']
     
-#Obtain fees, approach through positions
-def fee_simulator(order_id):
+
+def fee_simulator(order_id): 
+    
     #Check if order has filled status
-    order = safe_get_request(f"{trading_url}/v2/orders/{order_id}", headers=headers_get_request)
-    if order['status'] != "filled":
+    latest_order = safe_get_request(f"{trading_url}/v2/orders/{order_id}", headers=headers_get_request)
+    if latest_order['status'] != "filled":
         print("Order not yet filled, fees calculated upon fill")
         return
     
-    ticker = order['symbol']
-    side = order['side']
-    if '/' in ticker:
-        ticker = ticker.replace('/', '')
-    if ticker[-3:] == "BTC" and side == "buy":
-        ticker = ticker.replace('BTC', 'USD')
-    if ticker[-4:] == "USDT" and side == "buy":
-        ticker = ticker.replace('USDT', 'USD')
-    if ticker[-4:] == "USDC" and side == "buy":
-        ticker = ticker.replace('USDC', 'USD')
+    avg_fill_price = float(latest_order['filled_avg_price'])
+    filled_qty = float(latest_order['filled_qty'])
+    order_type = latest_order['order_type']
+    amount_at_submission = float(latest_order['qty']) if latest_order['qty'] else float(latest_order['notional']) 
+    time_at_submission = latest_order['submitted_at']
+    market_price_at_fill = prices[time_at_submission]['bid/ask at fill']
+    
+    #calculate slippage cost of order
+    slippage_cost = abs(market_price_at_fill - avg_fill_price) * filled_qty
+    if '/BTC' in latest_order['symbol']:
+        base_token = latest_order['symbol'].split('/')[1]
+        usd_pair = f"{base_token}/USD"
+        orderside = latest_order['side'] 
+        slippage_cost = slippage_cost * float(return_latest_price(usd_pair, orderside)) #convert slippage cost from BTC amount to USD amount if necessary
+    
+    #calculate trading tier fee cost for crypto, stock trading has no trading fees
+    if latest_order['symbol'] in list_of_crypto_pairs:
+        one_month_ago = datetime.now() - timedelta(days=30)
+        one_month_ago = one_month_ago.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+        all_orders_last_month = safe_get_request(f"{trading_url}/v2/orders", headers=headers_get_request, 
+                                                 params={
+                                                     "status": "all",
+                                                     "after": one_month_ago,
+                                                     "direction": "desc"
+                                                }
+        )
+    
+        monthly_trading_volume = 0
+        for order in all_orders_last_month:
+            if order['symbol'] in list_of_crypto_pairs:
+                if '/BTC' in order['symbol']:
+                    traded_token = order['symbol'].split('/')[0]
+                    base_token = order['symbol'].split('/')[1]
+                    main_usd_pair = f"{traded_token}/USD"
+                    base_usd_pair = f"{base_token}/USD"
+                    orderside = order['side']
+                    order_volume = float(order['qty']) if order['qty'] else float(order['notional'])
+                    if order['qty']:
+                        order_volume = order_volume * float(return_latest_price(main_usd_pair, orderside))
+                    if order['notional']:
+                        order_volume = order_volume * float(return_latest_price(base_usd_pair, orderside)) #store live BTC/USD price instead of calling it everytime
+                    monthly_trading_volume += order_volume
+                else:
+                    order_volume = float(order['qty']) if order['qty'] else float(order['notional'])
+                    if order['qty']:
+                        traded_pair = order['symbol']
+                        orderside = order['side']
+                        order_volume = order_volume * float(return_latest_price(traded_pair, orderside))
+                        monthly_trading_volume += order_volume
+                    else:
+                        monthly_trading_volume += order_volume
+    
+        if order_type == 'market': # assign taker trading tier fees based on monthly trading volumes
+            if 0 <= monthly_trading_volume <= 100000:
+                trading_tier_fee = 0.0025
+            elif 100000 <= monthly_trading_volume <= 500000:
+                trading_tier_fee = 0.0022
+            elif 500000 <= monthly_trading_volume <= 1000000:
+                trading_tier_fee = 0.002
+            elif 1000000 <= monthly_trading_volume <= 10000000:
+                trading_tier_fee = 0.0018
+            elif 10000000 <= monthly_trading_volume <= 25000000:
+                trading_tier_fee: 0.0015
+            elif 25000000 <= monthly_trading_volume <= 50000000:
+                trading_tier_fee = 0.0013
+            elif 50000000 <= monthly_trading_volume <= 100000000:
+                trading_tier_fee = 0.0012
+            else:
+                trading_tier_fee = 0.001
+    
+        if order_type == 'limit': # assign maker trading tier fees based on monthly trading volumes
+            if 0 <= monthly_trading_volume <= 100000:
+                trading_tier_fee = 0.0015
+            elif 100000 <= monthly_trading_volume <= 500000:
+                trading_tier_fee = 0.0012
+            elif 500000 <= monthly_trading_volume <= 1000000:
+                trading_tier_fee = 0.001
+            elif 1000000 <= monthly_trading_volume <= 10000000:
+                trading_tier_fee = 0.0008
+            elif 10000000 <= monthly_trading_volume <= 25000000:
+                trading_tier_fee: 0.0005
+            elif 25000000 <= monthly_trading_volume <= 50000000:
+                trading_tier_fee = 0.0002
+            elif 50000000 <= monthly_trading_volume <= 100000000:
+                trading_tier_fee = 0.0002
+            else:
+                trading_tier_fee = 0
+    
+        if '/BTC' in latest_order['symbol']:
+            base_token = latest_order['symbol'].split('/')[1]
+            base_usd_pair = f"{base_token}/USD"
+            orderside = latest_order['side']
+            if latest_order['qty']:
+                trading_fees = (amount_at_submission * prices[time_at_submission]['bid/ask at submission'] * prices[time_at_submission]['BTC/USD at submission']) * trading_tier_fee
+            if latest_order['notional']:
+                trading_fees = (amount_at_submission * prices[time_at_submission]['BTC/USD at submission']) * trading_tier_fee 
+        else:
+            if latest_order['qty']:
+                trading_fees = (amount_at_submission * prices[time_at_submission]['bid/ask at submission']) * trading_tier_fee
+            else:
+                trading_fees = amount_at_submission * trading_tier_fee
+    
+        total_cost = slippage_cost + trading_fees
         
-    position = safe_get_request(f"{trading_url}/v2/positions/{ticker}", headers=headers_get_request)
-    cost_basis = float(position['cost_basis'])
-    avg_entry_price = float(position['avg_entry_price'])
-    qty = float(position['qty'])
-    trading_fees = cost_basis - (avg_entry_price * qty)
-    return trading_fees
-
+    else: #stock trading has no trading fees
+        total_cost = slippage_cost
+    
+    return total_cost
+    
 if __name__ == "__main__":
     
     #Replace params with your selections
-    order_id = open_new_trade(ticker='ETH/BTC', ordertype='market', orderside='buy', qty=1)
-    time.sleep(3)
-    print(fee_simulator(order_id))
+    order_id = open_new_trade(ticker='ETH/BTC', ordertype='market', orderside='buy', qty=0.5)
+    if order_id is not None:
+        time.sleep(3)
+        print("Trading fees:", fee_simulator(order_id))
+        print("Order details:", list(orders.items())[-1][1])
+    else:
+        print("Order was not created")
 
 
     
