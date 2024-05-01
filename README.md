@@ -1,8 +1,8 @@
 # Project Alpaca-functions
-Project creates functions for seamless trading of US equities and cryptos over Alpacas API.
-Functions are toggleable based on user input to set asset traded, market side, order type,
-as well as take profit and stop loss for multi legged orders. Functions also handle fee 
-computations by computing slippage costs and trading fees by user volume tiers.
+Project creates an execution algorithm for seamless trading of US equities and cryptos over Alpacas API.
+Inputs are toggleable to set asset traded, market side, order type,
+as well as take profit and stop loss for multi legged orders. Execution flow also handles fee 
+computations by computing slippage costs and trading fees for crypto set by user 30 day volume tiers.
 ## Requirements
 - Python >= 3.7
 - Alpaca API Key and Secret key
