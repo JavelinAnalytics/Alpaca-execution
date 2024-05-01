@@ -1,4 +1,4 @@
-# Project Alpaca-functions
+# Project Alpaca-execution
 Execution algorithm for seamless trading of US equities and cryptos over Alpacas API.
 Inputs are toggleable to set asset traded, market side, order type,
 as well as take profit and stop loss for multi legged orders. Execution flow also handles fee 
